@@ -1,0 +1,46 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # Name for the one-shot test job
+  name: torn-income-test-job 
+spec:
+  template:
+    spec:
+      containers:
+      - name: income-calculator-test
+        # Use the same image as the CronJob
+        image: localhost:32000/torn-income-calculator:0.0.2 
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1001 # Example non-root user ID
+          capabilities:
+            drop:
+            - ALL # Drop all capabilities for security
+          seccompProfile:
+            type: RuntimeDefault # Use default seccomp profile
+        resources:
+          requests:
+            cpu: "50m"     # 0.05 CPU
+            memory: "50Mi" # 50 MB
+          limits:
+            cpu: "100m"    # 0.1 CPU
+            memory: "100Mi" # 100 MB
+        env:
+        - name: TORN_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: torn-secrets # Matches the Secret name
+              key: torn-api-key # Matches the key in the Secret data
+        - name: ENV
+          value: production # Using production logging for test
+        # Optional: Uncomment and set desired log level for testing
+        # - name: LOGLEVEL 
+        #   value: "debug"
+      restartPolicy: Never # Run once; don't restart on failure for a test job
+  # Optional: backoffLimit specifies the number of retries before considering a Job as failed
+  backoffLimit: 1
+  # Optional: activeDeadlineSeconds specifies the duration in seconds relative to the startTime
+  # that the job may be active before the system tries to terminate it
+  # activeDeadlineSeconds: 600 # e.g., 10 minutes
+ 

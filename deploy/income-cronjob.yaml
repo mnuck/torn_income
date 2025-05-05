@@ -1,0 +1,46 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: torn-income-calculator
+spec:
+  # Run daily at 18:10 UTC (adjust as needed)
+  schedule: "10 18 * * *" 
+  concurrencyPolicy: Forbid  # Don't run multiple instances simultaneously
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5 # Keep a few more failed jobs for debugging
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: income-calculator
+            # Replace with your actual image registry/name/tag
+            image: localhost:32000/torn-income-calculator:0.0.1
+            securityContext:
+              allowPrivilegeEscalation: false
+              runAsNonRoot: true
+              runAsUser: 1001 # Example non-root user ID
+              capabilities:
+                drop:
+                - ALL # Drop all capabilities for security
+              seccompProfile:
+                type: RuntimeDefault # Use default seccomp profile
+            resources:
+              requests:
+                cpu: "50m"     # 0.05 CPU
+                memory: "50Mi" # 50 MB
+              limits:
+                cpu: "100m"    # 0.1 CPU
+                memory: "100Mi" # 100 MB
+            env:
+            - name: TORN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: torn-secrets # Matches the Secret name
+                  key: torn-api-key # Matches the key in the Secret data
+            - name: ENV
+              value: production
+            # Optional: Uncomment and set desired log level
+            # - name: LOGLEVEL 
+            #   value: "debug" 
+          restartPolicy: OnFailure 
