@@ -23,9 +23,9 @@ import (
 )
 
 const (
-	baseURL           = "https://api.torn.com/company/"
-	daysToFetch       = 6
-	maxEntriesPerCall = 100 // Max entries returned when using 'from'/'to'
+	baseURL              = "https://api.torn.com/company/"
+	incomeReportsToFetch = 6   // Renamed from daysToFetch
+	maxEntriesPerCall    = 100 // Max entries returned when using 'from'/'to'
 )
 
 // Represents the structure of a single news item
@@ -173,13 +173,13 @@ func fetchCompanyProfile(apiKey string) CompanyProfile { // Return only profile,
 
 // runIncomeCalculation runs the income calculation and logs the result.
 func runIncomeCalculation(apiKey, companyID string) int64 {
-	log.Info().Msgf("Calculating total gross income for company %s for the last %d days...", companyID, daysToFetch)
+	log.Info().Msgf("Calculating total gross income for company %s for the last %d income reports...", companyID, incomeReportsToFetch)
 	totalIncome, err := fetchAndSumIncome(apiKey, companyID)
 	if err != nil {
-		log.Error().Err(err).Msgf("Error calculating daily income sum for company %s", companyID)
+		log.Error().Err(err).Msgf("Error calculating income sum for company %s", companyID)
 		return 0
 	}
-	log.Info().Msgf("Total gross income over the last %d days for company %s: $%s", daysToFetch, companyID, formatWithCommas(totalIncome))
+	log.Info().Msgf("Total gross income over the last %d income reports for company %s: $%s", incomeReportsToFetch, companyID, formatWithCommas(totalIncome))
 	return totalIncome
 }
 
@@ -223,79 +223,97 @@ func logIncomeComparison(totalIncome int64, p20Income int64) {
 
 func fetchAndSumIncome(apiKey, companyID string) (int64, error) {
 	var totalIncome int64 = 0
-	processedTimestamps := make(map[int64]bool) // Track processed news items to avoid double counting if API overlaps
+	var incomeEventsFoundSoFar int = 0
+	processedTimestamps := make(map[int64]bool) // Track processed news items
 
-	// Define the rate limiter: 100 calls per minute = 100/60 calls per second
-	// Allow a burst of 1 initially.
-	limiter := rate.NewLimiter(rate.Limit(100.0/60.0), 1)
+	limiter := rate.NewLimiter(rate.Limit(100.0/60.0), 1) // 100 calls/min
 
-	// Calculate the timestamp cutoff. We want the last 'daysToFetch' income reports.
-	// Since reports arrive around 18:00 UTC, we set the cutoff to 18:00:00 UTC
-	// on the day *before* the first report we want to include.
-	now := time.Now()
-	// Get today's date part in UTC
-	todayDate := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	// Set the time to 18:00:00 UTC for today's reference point
-	today1800UTC := todayDate.Add(18 * time.Hour)
-	// Calculate the cutoff time: go back `daysToFetch` days from today's 18:00 UTC mark.
-	// This makes the cutoff 18:00 UTC on the day *before* the 6th report back.
-	cutoffTime := today1800UTC.AddDate(0, 0, -daysToFetch)
-	cutoffTimestamp := cutoffTime.Unix()
+	log.Info().Msgf("Fetching news until exactly %d income reports are found...", incomeReportsToFetch)
 
-	log.Info().Msgf("Fetching news from %s onwards (aiming for last %d reports based on 18:00 UTC)", cutoffTime.Format(time.RFC3339), daysToFetch)
+	currentToTimestamp := time.Now().Unix()
+	// oldestProcessedTimestampInLoop keeps track of the 'to' timestamp used for the API call,
+	// to detect if we are stuck making calls with the same 'to' value without finding new entries.
+	var oldestProcessedTimestampInLoop int64 = currentToTimestamp
 
-	currentToTimestamp := now.Unix()
-
-	for {
-		// Wait for the rate limiter before making the API call
-		err := limiter.Wait(context.Background()) // context.Background is fine for simple cases
-		if err != nil {
-			// This error is unlikely for Wait unless context is cancelled, but handle defensively
-			return 0, fmt.Errorf("rate limiter wait error: %w", err)
+	for incomeEventsFoundSoFar < incomeReportsToFetch {
+		// Wait for the rate limiter
+		if err := limiter.Wait(context.Background()); err != nil {
+			return 0, fmt.Errorf("rate limiter error: %w", err)
 		}
 
+		log.Debug().Msgf("Fetching batch of news before timestamp: %s (%d). Seeking %d more income reports.",
+			time.Unix(currentToTimestamp, 0).Format(time.RFC3339), currentToTimestamp, incomeReportsToFetch-incomeEventsFoundSoFar)
 		apiResp, err := fetchNewsBatch(apiKey, companyID, currentToTimestamp)
 		if err != nil {
-			return 0, err
+			return totalIncome, fmt.Errorf("failed to fetch news batch: %w", err)
 		}
 
 		if len(apiResp.News) == 0 {
-			log.Info().Msg("No more news entries found.")
-			break // No news items returned, we're done
+			log.Warn().Msgf("No news items returned in batch. Found %d/%d income reports. Stopping further fetches.", incomeEventsFoundSoFar, incomeReportsToFetch)
+			break // No more news items available
 		}
 
-		// Collect and sort news items by timestamp (descending)
 		newsItems := make([]NewsItem, 0, len(apiResp.News))
 		for _, item := range apiResp.News {
 			newsItems = append(newsItems, item)
 		}
-
-		// Check if any news items were actually returned in the response
-		if len(apiResp.News) == 0 {
-			log.Info().Msg("No news entries found in this batch.")
-			break // No news items returned in this specific batch, assume we're done
-		}
-
 		sort.Slice(newsItems, func(i, j int) bool {
-			return newsItems[i].Timestamp > newsItems[j].Timestamp // Descending order
+			return newsItems[i].Timestamp > newsItems[j].Timestamp
 		})
 
-		oldestTimestampInBatch := newsItems[len(newsItems)-1].Timestamp
+		remainingEventsNeeded := incomeReportsToFetch - incomeEventsFoundSoFar
+		batchIncome, newEntriesCountInBatch, batchIncomeEventsCount, oldestTimestampProcessedInBatch := processNewsItems(newsItems, processedTimestamps, remainingEventsNeeded)
 
-		batchIncome, itemsProcessedInBatch := processNewsItems(newsItems, cutoffTimestamp, processedTimestamps)
 		totalIncome += batchIncome
+		incomeEventsFoundSoFar += batchIncomeEventsCount
 
-		log.Debug().Msgf("Processed %d new entries in this batch. Oldest timestamp: %s", itemsProcessedInBatch, time.Unix(oldestTimestampInBatch, 0).Format(time.RFC3339))
+		log.Debug().Msgf("Processed %d new entries in this batch. Found %d income events (this batch). Oldest item processed in batch: %s (%d). Total income events so far: %d/%d.",
+			newEntriesCountInBatch, batchIncomeEventsCount, time.Unix(oldestTimestampProcessedInBatch, 0).Format(time.RFC3339), oldestTimestampProcessedInBatch, incomeEventsFoundSoFar, incomeReportsToFetch)
 
-		// Decide whether to continue fetching
-		if oldestTimestampInBatch < cutoffTimestamp || len(newsItems) < maxEntriesPerCall || itemsProcessedInBatch == 0 {
-			log.Debug().Msg("Stopping fetch loop.")
+		if incomeEventsFoundSoFar >= incomeReportsToFetch { // Exact match or more (should be exact due to processNewsItems change)
+			log.Info().Msgf("Found exactly %d income reports. Stopping fetch loop.", incomeEventsFoundSoFar)
 			break
 		}
 
-		currentToTimestamp = oldestTimestampInBatch - 1
-	}
+		// Logic to determine the next 'currentToTimestamp'
+		if newEntriesCountInBatch == 0 && len(newsItems) > 0 {
+			log.Debug().Msg("No new unique entries processed in this batch, but news items were present. Advancing 'to' timestamp carefully.")
+			// If oldestTimestampProcessedInBatch is valid and older, use it. This means processNewsItems processed something.
+			if oldestTimestampProcessedInBatch > 0 && oldestTimestampProcessedInBatch < currentToTimestamp {
+				currentToTimestamp = oldestTimestampProcessedInBatch
+			} else if len(newsItems) > 0 {
+				// Fallback: use the oldest item from the raw batch if nothing was processed by processNewsItems
+				lastItemInRawBatchTimestamp := newsItems[len(newsItems)-1].Timestamp
+				if lastItemInRawBatchTimestamp < currentToTimestamp {
+					currentToTimestamp = lastItemInRawBatchTimestamp
+				} else {
+					log.Warn().Msg("Cannot advance 'to' timestamp. Oldest raw item not older. Stopping.")
+					break
+				}
+			} else {
+				log.Warn().Msg("No new unique entries and no news items in batch to determine next timestamp. Stopping.")
+				break
+			}
+		} else if oldestTimestampProcessedInBatch > 0 { // If items were processed, use the oldest *processed* item's timestamp
+			currentToTimestamp = oldestTimestampProcessedInBatch
+		} else if len(newsItems) > 0 { // Fallback if nothing was processed (e.g. all were filtered out before income check)
+			currentToTimestamp = newsItems[len(newsItems)-1].Timestamp
+		} else {
+			log.Warn().Msg("No news items in this batch to process or determine next timestamp from. Stopping.")
+			break
+		}
 
+		// Safety break if currentToTimestamp stops advancing and no new entries were processed
+		// (implying we might be stuck or there's no more relevant data)
+		if currentToTimestamp >= oldestProcessedTimestampInLoop && newEntriesCountInBatch == 0 {
+			log.Warn().Msgf("'to' timestamp %d (%s) did not advance past previous loop's 'to' %d (%s) and no new entries processed. Stopping to prevent infinite loop.",
+				currentToTimestamp, time.Unix(currentToTimestamp, 0).Format(time.RFC3339),
+				oldestProcessedTimestampInLoop, time.Unix(oldestProcessedTimestampInLoop, 0).Format(time.RFC3339))
+			break
+		}
+		oldestProcessedTimestampInLoop = currentToTimestamp
+
+	}
 	return totalIncome, nil
 }
 
@@ -325,22 +343,61 @@ func fetchNewsBatch(apiKey, companyID string, toTimestamp int64) (ApiResponse, e
 	return apiResp, nil
 }
 
-// processNewsItems processes news items, updates processedTimestamps, and returns the batch income and count.
-func processNewsItems(newsItems []NewsItem, cutoffTimestamp int64, processedTimestamps map[int64]bool) (int64, int) {
-	var batchIncome int64 = 0
-	itemsProcessed := 0
+// processNewsItems iterates through news items, extracts income, and sums it up.
+// It skips items with timestamps before cutoffTimestamp or already processed items.
+// It returns the sum of income from the batch, the count of new entries processed,
+// the count of income events found (up to maxEventsToProcess), and the oldest timestamp processed.
+func processNewsItems(newsItems []NewsItem, processedTimestamps map[int64]bool, maxEventsToProcess int) (batchIncome int64, newEntriesCount int, batchIncomeEventsCount int, oldestTimestampProcessed int64) {
+	batchIncome = 0
+	newEntriesCount = 0
+	batchIncomeEventsCount = 0
+	oldestTimestampProcessed = 0 // Will be set to the timestamp of the last item *actually processed*
+
+	if len(newsItems) == 0 || maxEventsToProcess <= 0 {
+		return // No items to process or no events needed
+	}
+
+	// Initialize with a value that will be overwritten by the first processed item,
+	// or remains 0 if nothing is processed.
+	// It's important that this reflects the oldest item *processed in this call*,
+	// not necessarily the oldest in the input newsItems if we stop early.
+	var lastProcessedItemTimestamp int64 = 0
+
 	for _, item := range newsItems {
-		if item.Timestamp < cutoffTimestamp || processedTimestamps[item.Timestamp] {
-			continue
+		if processedTimestamps[item.Timestamp] {
+			log.Debug().Msgf("Skipping already processed news item at timestamp %d", item.Timestamp)
+			continue // Skip already processed news items
 		}
+
+		// Tentatively process this item
+		currentIncome, isIncomeReport := extractIncomeFromNews(item.News)
+
+		if isIncomeReport {
+			// If we've already found enough events, don't process this one or any further.
+			if batchIncomeEventsCount >= maxEventsToProcess {
+				break
+			}
+			log.Debug().Msgf("Found income: %s from report on %s", formatWithCommas(currentIncome), time.Unix(item.Timestamp, 0).Format(time.RFC3339))
+			batchIncome += currentIncome
+			batchIncomeEventsCount++
+		}
+
+		// Common processing for any item that wasn't skipped and didn't break the loop early
 		processedTimestamps[item.Timestamp] = true
-		itemsProcessed++
-		if income, ok := extractIncomeFromNews(item.News); ok {
-			batchIncome += income
-			log.Debug().Msgf("Found income: %s from report on %s", formatWithCommas(income), time.Unix(item.Timestamp, 0).Format(time.RFC3339))
+		newEntriesCount++
+		lastProcessedItemTimestamp = item.Timestamp // Update with this item's timestamp
+
+		// If we've hit the target for income events, we can stop processing this batch.
+		if isIncomeReport && batchIncomeEventsCount >= maxEventsToProcess {
+			break
 		}
 	}
-	return batchIncome, itemsProcessed
+
+	// oldestTimestampProcessed should be the timestamp of the last item *actually* processed
+	// which helped contribute to newEntriesCount.
+	oldestTimestampProcessed = lastProcessedItemTimestamp
+
+	return
 }
 
 // extractIncomeFromNews extracts income from a news string if present.
@@ -432,14 +489,11 @@ func fetchCompanyList(apiKey string, companyType int) (CompanyListResponse, erro
 }
 
 // incomeAtRank returns the income at the calculated threshold index in the sorted company list.
-func incomeAtRank(allCompanies []CompanyDetail, rank10Count int, percentileRank float64) int64 {
+func incomeAtRank(allCompanies []CompanyDetail, rank int, percentileRank float64) int64 {
 	totalCompaniesFetched := len(allCompanies)
-	index := int(math.Ceil(float64(rank10Count)*percentileRank)) - 1
-	if index < 0 {
-		index = 0
-	}
+	index := int(math.Max(0, math.Ceil(float64(rank)*percentileRank)-1))
 	if index >= totalCompaniesFetched {
-		log.Warn().Msgf("Rank threshold index (%d) based on rank 10 count (%d) exceeds total companies (%d). Using last company's income.", index, rank10Count, totalCompaniesFetched)
+		log.Warn().Msgf("Rank threshold index (%d) based on rank 10 count (%d) exceeds total companies (%d). Using last company's income.", index, rank, totalCompaniesFetched)
 		index = totalCompaniesFetched - 1
 	}
 	return allCompanies[index].WeeklyIncome
