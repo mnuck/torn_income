@@ -24,7 +24,7 @@ import (
 
 const (
 	baseURL              = "https://api.torn.com/company/"
-	incomeReportsToFetch = 6   // Renamed from daysToFetch
+	incomeReportsToFetch = 6
 	maxEntriesPerCall    = 100 // Max entries returned when using 'from'/'to'
 )
 
@@ -34,8 +34,8 @@ type NewsItem struct {
 	Timestamp int64  `json:"timestamp"`
 }
 
-// Represents the overall API response structure
-type ApiResponse struct {
+// Represents the overall API response structure for the company news endpoint
+type CompanyNewsResponse struct {
 	News map[string]NewsItem `json:"news"`
 }
 
@@ -131,7 +131,7 @@ func getAPIKey() string {
 
 // fetchCompanyProfile fetches the company profile from the API.
 // It logs and exits via log.Fatal if any error occurs.
-func fetchCompanyProfile(apiKey string) CompanyProfile { // Return only profile, handle errors internally
+func fetchCompanyProfile(apiKey string) CompanyProfile {
 	apiURL := fmt.Sprintf("%s?selections=profile&key=%s", baseURL, apiKey) // Base URL doesn't need company ID here
 	maskedURL := strings.Replace(apiURL, "key="+apiKey, "key=[REDACTED]", 1)
 	log.Debug().Msgf("Fetching company profile from URL: %s", maskedURL)
@@ -139,7 +139,6 @@ func fetchCompanyProfile(apiKey string) CompanyProfile { // Return only profile,
 	resp, err := http.Get(apiURL)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to execute company profile request")
-		// return CompanyProfile{} // Unreachable due to log.Fatal
 	}
 	defer resp.Body.Close()
 
@@ -150,25 +149,22 @@ func fetchCompanyProfile(apiKey string) CompanyProfile { // Return only profile,
 			log.Warn().Err(readErr).Msg("Failed to read error response body")
 		}
 		log.Fatal().Msgf("Company profile API request failed with status %s. Body: %s", resp.Status, string(bodyBytes))
-		// return CompanyProfile{} // Unreachable due to log.Fatal
 	}
 
 	var apiResp CompanyProfileResponse
 	err = json.NewDecoder(resp.Body).Decode(&apiResp)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to decode company profile API response")
-		// return CompanyProfile{} // Unreachable due to log.Fatal
 	}
 
 	// Check if the nested Company field is populated
 	if apiResp.Company.ID == 0 {
 		log.Fatal().Msg("Company profile data not found in API response (Company ID is 0)")
-		// return CompanyProfile{} // Unreachable due to log.Fatal
 	}
 
 	// Log the fetched details before returning
-	log.Info().Msgf("Fetched profile - Company ID: %d, Name: %s, Type: %d", apiResp.Company.ID, apiResp.Company.Name, apiResp.Company.CompanyType)
-	return apiResp.Company // Removed error return
+	log.Debug().Msgf("Fetched profile - Company ID: %d, Name: %s, Type: %d", apiResp.Company.ID, apiResp.Company.Name, apiResp.Company.CompanyType)
+	return apiResp.Company
 }
 
 // runIncomeCalculation runs the income calculation and logs the result.
@@ -318,7 +314,7 @@ func fetchAndSumIncome(apiKey, companyID string) (int64, error) {
 }
 
 // fetchNewsBatch fetches a batch of news from the API up to the given timestamp.
-func fetchNewsBatch(apiKey, companyID string, toTimestamp int64) (ApiResponse, error) {
+func fetchNewsBatch(apiKey, companyID string, toTimestamp int64) (CompanyNewsResponse, error) {
 	apiURL := fmt.Sprintf("%s%s?selections=news&key=%s&to=%d",
 		baseURL, companyID, apiKey, toTimestamp)
 	maskedURL := strings.Replace(apiURL, "key="+apiKey, "key=[REDACTED]", 1)
@@ -326,18 +322,18 @@ func fetchNewsBatch(apiKey, companyID string, toTimestamp int64) (ApiResponse, e
 
 	resp, err := http.Get(apiURL)
 	if err != nil {
-		return ApiResponse{}, fmt.Errorf("failed to fetch API data: %w", err)
+		return CompanyNewsResponse{}, fmt.Errorf("failed to fetch API data: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return ApiResponse{}, fmt.Errorf("API request failed with status: %s", resp.Status)
+		return CompanyNewsResponse{}, fmt.Errorf("API request failed with status: %s", resp.Status)
 	}
 
-	var apiResp ApiResponse
+	var apiResp CompanyNewsResponse
 	err = json.NewDecoder(resp.Body).Decode(&apiResp)
 	if err != nil {
-		return ApiResponse{}, fmt.Errorf("failed to decode API response: %w", err)
+		return CompanyNewsResponse{}, fmt.Errorf("failed to decode API response: %w", err)
 	}
 
 	return apiResp, nil
