@@ -21,3 +21,6 @@ vendor/
 .idea/
 .vscode/
 .DS_Store 
+
+# Ignore binary
+income_calculator
