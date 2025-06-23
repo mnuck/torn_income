@@ -16,6 +16,7 @@ spec:
           - name: income-calculator
             # Replace with your actual image registry/name/tag
             image: localhost:32000/torn-income-calculator:0.0.1
+            args: ["-percentile", "0.80"]  # Default to 80th percentile
             securityContext:
               allowPrivilegeEscalation: false
               runAsNonRoot: true

@@ -21,12 +21,26 @@ This Go program calculates the total gross income for the Torn company associate
 
 - Dynamically fetches the user's company ID and type using the API key.
 - Fetches and sums gross income from the Torn company news reports associated with the provided API key.
-- Analyzes all companies of the same type as the user's company to find the income threshold for the top 20% (80th percentile) of rank 10 companies within that type.
+- Analyzes all companies of the same type as the user's company to find the income threshold for the specified percentile of rank 10 companies within that type.
 - Outputs how much more income the user's company needs to reach that threshold.
 - Loads environment variables from a `.env` file if present.
 - Configurable logging level using `LOGLEVEL` environment variable (e.g., `debug`, `info`, `warn`, `error`). Default is `info`.
 - Configurable logging format using `ENV=production` for JSON logs. Default is console-friendly output.
 - Logs output using zerolog.
+
+## Usage
+
+```sh
+# Run with default settings (80th percentile)
+./income_calculator
+
+# Run with custom percentile (e.g., 90th percentile)
+./income_calculator -percentile 0.90
+```
+
+### Command Line Options
+
+- `-percentile`: Percentile rank for income threshold (0.0-1.0). Default is 0.80 (80th percentile).
 
 ## Setup
 

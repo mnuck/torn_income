@@ -10,6 +10,7 @@ spec:
       - name: income-calculator-test
         # Use the same image as the CronJob
         image: localhost:32000/torn-income-calculator:0.0.2 
+        args: ["-percentile", "0.80"]  # Default to 80th percentile
         securityContext:
           allowPrivilegeEscalation: false
           runAsNonRoot: true
