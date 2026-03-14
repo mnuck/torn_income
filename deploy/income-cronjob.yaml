@@ -2,6 +2,8 @@ apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: torn-income-calculator
+  annotations:
+    app.kubernetes.io/source-code: "git@github.com:mnuck/torn_income.git"
 spec:
   # Run daily at 18:10 UTC (adjust as needed)
   schedule: "10 18 * * *" 
