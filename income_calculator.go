@@ -4,15 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/rs/zerolog/log"
 	"golang.org/x/text/language"
 	"golang.org/x/text/message"
 	"golang.org/x/time/rate"
@@ -62,31 +63,30 @@ func main() {
 // runIncomeCalculation runs the income calculation and logs the result.
 func runIncomeCalculation(apiKey string, companyID int) int64 {
 	companyIDStr := strconv.Itoa(companyID)
-	log.Info().Msgf("Calculating total gross income for company %s for the last %d income reports...", companyIDStr, incomeReportsToFetch)
+	slog.Info(fmt.Sprintf("Calculating total gross income for company %s for the last %d income reports...", companyIDStr, incomeReportsToFetch))
 	totalIncome, err := fetchAndSumIncome(apiKey, companyIDStr)
 	if err != nil {
-		log.Error().Err(err).Msgf("Error calculating income sum for company %s", companyIDStr)
+		slog.Error(fmt.Sprintf("Error calculating income sum for company %s", companyIDStr), "error", err)
 		return 0
 	}
-	log.Info().Msgf("Total gross income over the last %d income reports for company %s: $%s", incomeReportsToFetch, companyIDStr, formatWithCommas(totalIncome))
+	slog.Info(fmt.Sprintf("Total gross income over the last %d income reports for company %s: $%s", incomeReportsToFetch, companyIDStr, formatWithCommas(totalIncome)))
 	return totalIncome
 }
 
 // runCompanyAnalysis fetches, analyzes the company list, logs results/errors, and returns the threshold.
-// It exits the program via log.Fatal if an error occurs.
+// It exits the program via slog.Error + os.Exit if an error occurs.
 // It returns the P20 income threshold if successful.
 func runCompanyAnalysis(apiKey string, companyType int) (thresholdIncome int64) {
 	rank10Count, thresholdIncome, err := analyzeCompanyListByType(apiKey, companyType)
 	if err != nil {
 		// Log the error and exit the program
-		log.Fatal().Err(err).Msg("Fatal error during company list analysis")
-		// log.Fatal exits, so no return needed here, but keeps compiler happy
-		return 0
+		slog.Error("Fatal error during company list analysis", "error", err)
+		os.Exit(1)
 	}
 
 	// Log the successful analysis results (using local rank10Count)
-	log.Info().Msgf("Found %s companies with rank 10.", formatWithCommas(int64(rank10Count)))
-	log.Info().Msgf("The income at the rank threshold (80th percentile of rank 10 companies) is: $%s", formatWithCommas(thresholdIncome))
+	slog.Info(fmt.Sprintf("Found %s companies with rank 10.", formatWithCommas(int64(rank10Count))))
+	slog.Info(fmt.Sprintf("The income at the rank threshold (80th percentile of rank 10 companies) is: $%s", formatWithCommas(thresholdIncome)))
 
 	// Return only thresholdIncome
 	return thresholdIncome
@@ -95,16 +95,16 @@ func runCompanyAnalysis(apiKey string, companyType int) (thresholdIncome int64) 
 // logIncomeComparison calculates and logs the difference between the company's income and the threshold.
 func logIncomeComparison(totalIncome int64, thresholdIncome int64) {
 	if totalIncome <= 0 {
-		log.Warn().Msg("Total income is zero or negative, cannot calculate difference to threshold.")
+		slog.Warn("Total income is zero or negative, cannot calculate difference to threshold.")
 		return
 	}
 	if thresholdIncome <= 0 {
-		log.Warn().Msg("Threshold income is zero or negative, cannot calculate difference.")
+		slog.Warn("Threshold income is zero or negative, cannot calculate difference.")
 		return
 	}
 
 	neededToday := int64(math.Max(float64(thresholdIncome-totalIncome), 0))
-	log.Info().Msgf("Income needed to reach the rank threshold: $%s", formatWithCommas(neededToday))
+	slog.Info(fmt.Sprintf("Income needed to reach the rank threshold: $%s", formatWithCommas(neededToday)))
 }
 
 // fetchLastIncomeEvents fetches the last six income event amounts (int64) for a company.
@@ -117,14 +117,14 @@ func fetchLastIncomeEvents(apiKey, companyID string) ([]int64, error) {
 
 	limiter := rate.NewLimiter(rate.Limit(100.0/60.0), 1) // 100 calls/min
 
-	log.Info().Msgf("Searching the last %d hours of news for the %d most recent income events…", lookbackHours, incomeReportsToFetch)
+	slog.Info(fmt.Sprintf("Searching the last %d hours of news for the %d most recent income events…", lookbackHours, incomeReportsToFetch))
 
 	for incomeEventsFound < incomeReportsToFetch && toTimestamp > fromTimestamp {
 		if err := limiter.Wait(context.Background()); err != nil {
 			return incomes, fmt.Errorf("rate limiter error: %w", err)
 		}
 
-		log.Debug().Msgf("Fetching news with from=%d (%s), to=%d (%s)", fromTimestamp, time.Unix(fromTimestamp, 0).Format(time.RFC3339), toTimestamp, time.Unix(toTimestamp, 0).Format(time.RFC3339))
+		slog.Debug(fmt.Sprintf("Fetching news with from=%d (%s), to=%d (%s)", fromTimestamp, time.Unix(fromTimestamp, 0).Format(time.RFC3339), toTimestamp, time.Unix(toTimestamp, 0).Format(time.RFC3339)))
 
 		apiResp, err := fetchNewsBatch(apiKey, companyID, fromTimestamp, toTimestamp)
 		if err != nil {
@@ -132,7 +132,7 @@ func fetchLastIncomeEvents(apiKey, companyID string) ([]int64, error) {
 		}
 
 		if len(apiResp.News) == 0 {
-			log.Warn().Msg("No news items returned; stopping search.")
+			slog.Warn("No news items returned; stopping search.")
 			break
 		}
 
@@ -146,7 +146,7 @@ func fetchLastIncomeEvents(apiKey, companyID string) ([]int64, error) {
 
 		for _, item := range newsItems {
 			if income, ok := extractIncomeFromNews(item.News); ok {
-				log.Debug().Msgf("Found income event: $%s at %s", formatWithCommas(income), time.Unix(item.Timestamp, 0).Format(time.RFC3339))
+				slog.Debug(fmt.Sprintf("Found income event: $%s at %s", formatWithCommas(income), time.Unix(item.Timestamp, 0).Format(time.RFC3339)))
 				incomes = append(incomes, income)
 				incomeEventsFound++
 				if incomeEventsFound >= incomeReportsToFetch {
@@ -157,19 +157,19 @@ func fetchLastIncomeEvents(apiKey, companyID string) ([]int64, error) {
 
 		foundEnoughIncomeEvents := incomeEventsFound >= incomeReportsToFetch
 		if foundEnoughIncomeEvents {
-			log.Debug().Msg("Found enough income events; stopping search.")
+			slog.Debug("Found enough income events; stopping search.")
 			break
 		}
 
 		isLastBatch := len(apiResp.News) < maxEntriesPerCall
 		if isLastBatch {
-			log.Debug().Msg("Received a partial page of results; no further news items available.")
+			slog.Debug("Received a partial page of results; no further news items available.")
 			break
 		}
 
 		failedToMakeProgress := oldestTimestampInBatch >= toTimestamp
 		if failedToMakeProgress {
-			log.Warn().Msg("Paging did not make progress; stopping to avoid infinite loop.")
+			slog.Warn("Paging did not make progress; stopping to avoid infinite loop.")
 			break
 		}
 
@@ -177,7 +177,7 @@ func fetchLastIncomeEvents(apiKey, companyID string) ([]int64, error) {
 	}
 
 	if incomeEventsFound < incomeReportsToFetch {
-		log.Warn().Msgf("Only found %d/%d income events in the last %d hours.", incomeEventsFound, incomeReportsToFetch, lookbackHours)
+		slog.Warn(fmt.Sprintf("Only found %d/%d income events in the last %d hours.", incomeEventsFound, incomeReportsToFetch, lookbackHours))
 	}
 
 	return incomes, nil
@@ -206,7 +206,7 @@ func fetchNewsBatch(apiKey, companyID string, fromTimestamp, toTimestamp int64) 
 	apiURL := fmt.Sprintf("%s%s?selections=news&key=%s&from=%d&to=%d",
 		baseURL, companyID, apiKey, fromTimestamp, toTimestamp)
 	maskedURL := strings.Replace(apiURL, "key="+apiKey, "key=[REDACTED]", 1)
-	log.Debug().Msgf("Fetching URL: %s", maskedURL)
+	slog.Debug("Fetching URL: "+maskedURL)
 
 	resp, err := http.Get(apiURL)
 	if err != nil {
@@ -236,7 +236,7 @@ func extractIncomeFromNews(news string) (int64, bool) {
 		if err == nil {
 			return income, true
 		}
-		log.Warn().Msgf("Could not parse income: %s Error: %v", incomeStr, err)
+		slog.Warn(fmt.Sprintf("Could not parse income: %s Error: %v", incomeStr, err))
 	}
 	return 0, false
 }
@@ -247,7 +247,7 @@ func analyzeCompanyListByType(apiKey string, companyType int) (rank10Count int, 
 	const targetRank = 10
 	const percentileRank = 0.80 // P20 income means 80th percentile rank when sorted descending
 
-	log.Info().Msgf("Fetching company list for type %d to analyze rank %d companies...", companyType, targetRank)
+	slog.Info(fmt.Sprintf("Fetching company list for type %d to analyze rank %d companies...", companyType, targetRank))
 
 	apiResp, err := fetchCompanyList(apiKey, companyType)
 	if err != nil {
@@ -272,7 +272,7 @@ func analyzeCompanyListByType(apiKey string, companyType int) (rank10Count int, 
 	}
 
 	if rank10Count == 0 {
-		log.Warn().Msgf("No companies found with rank %d for type %d.", targetRank, companyType)
+		slog.Warn(fmt.Sprintf("No companies found with rank %d for type %d.", targetRank, companyType))
 		// Return 0 count, 0 income, and no error
 		return 0, 0, nil
 	}
@@ -284,7 +284,7 @@ func analyzeCompanyListByType(apiKey string, companyType int) (rank10Count int, 
 
 	thresholdIncome = incomeAtRank(allCompanies, rank10Count, percentileRank)
 
-	log.Debug().Msgf("Analyzed %d companies of type %d. Counted %d rank 10s.", totalCompaniesFetched, companyType, rank10Count)
+	slog.Debug(fmt.Sprintf("Analyzed %d companies of type %d. Counted %d rank 10s.", totalCompaniesFetched, companyType, rank10Count))
 	// Return values are implicitly set via named return variables
 	return
 }
@@ -294,7 +294,7 @@ func fetchCompanyList(apiKey string, companyType int) (CompanyListResponse, erro
 	apiURL := fmt.Sprintf("%s%d?selections=companies&key=%s",
 		baseURL, companyType, apiKey)
 	maskedURL := strings.Replace(apiURL, "key="+apiKey, "key=[REDACTED]", 1)
-	log.Debug().Msgf("Fetching URL: %s", maskedURL)
+	slog.Debug("Fetching URL: "+maskedURL)
 
 	resp, err := http.Get(apiURL)
 	if err != nil {
@@ -320,7 +320,7 @@ func incomeAtRank(allCompanies []CompanyDetail, rank int, percentileRank float64
 	totalCompaniesFetched := len(allCompanies)
 	index := int(math.Max(0, math.Ceil(float64(rank)*percentileRank)-1))
 	if index >= totalCompaniesFetched {
-		log.Warn().Msgf("Rank threshold index (%d) based on rank 10 count (%d) exceeds total companies (%d). Using last company's income.", index, rank, totalCompaniesFetched)
+		slog.Warn(fmt.Sprintf("Rank threshold index (%d) based on rank 10 count (%d) exceeds total companies (%d). Using last company's income.", index, rank, totalCompaniesFetched))
 		index = totalCompaniesFetched - 1
 	}
 	return allCompanies[index].WeeklyIncome
