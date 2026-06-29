@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joho/godotenv"
+	"income_calculator/internal/env"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -13,7 +13,7 @@ import (
 // setupEnvironment loads .env file and configures zerolog output and log level.
 func setupEnvironment() {
 	// Load .env file if it exists
-	err := godotenv.Load()
+	err := env.Load(".env")
 	if err == nil {
 		log.Debug().Msg("Loaded environment variables from .env file.")
 	} else {
