@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"os"
 	"strings"
-
-	"github.com/rs/zerolog/log"
 )
 
 type CompanyProfile struct {
@@ -21,15 +21,16 @@ type CompanyProfileResponse struct {
 }
 
 // fetchCompanyProfile fetches the company profile from the API.
-// It logs and exits via log.Fatal if any error occurs.
+// It logs and exits via slog.Error + os.Exit if any error occurs.
 func fetchCompanyProfile(apiKey string) CompanyProfile {
 	apiURL := fmt.Sprintf("%s?selections=profile&key=%s", baseURL, apiKey) // Base URL doesn't need company ID here
 	maskedURL := strings.Replace(apiURL, "key="+apiKey, "key=[REDACTED]", 1)
-	log.Debug().Msgf("Fetching company profile from URL: %s", maskedURL)
+	slog.Debug("Fetching company profile from URL: "+maskedURL)
 
 	resp, err := http.Get(apiURL)
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to execute company profile request")
+		slog.Error("Failed to execute company profile request", "error", err)
+		os.Exit(1)
 	}
 	defer resp.Body.Close()
 
@@ -37,23 +38,26 @@ func fetchCompanyProfile(apiKey string) CompanyProfile {
 		// Try to read body for more context if it's an error status
 		bodyBytes, readErr := io.ReadAll(resp.Body) // Capture potential read error
 		if readErr != nil {
-			log.Warn().Err(readErr).Msg("Failed to read error response body")
+			slog.Warn("Failed to read error response body", "error", readErr)
 		}
-		log.Fatal().Msgf("Company profile API request failed with status %s. Body: %s", resp.Status, string(bodyBytes))
+		slog.Error("Company profile API request failed with status "+resp.Status+". Body: "+string(bodyBytes))
+		os.Exit(1)
 	}
 
 	var apiResp CompanyProfileResponse
 	err = json.NewDecoder(resp.Body).Decode(&apiResp)
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to decode company profile API response")
+		slog.Error("Failed to decode company profile API response", "error", err)
+		os.Exit(1)
 	}
 
 	// Check if the nested Company field is populated
 	if apiResp.Company.ID == 0 {
-		log.Fatal().Msg("Company profile data not found in API response (Company ID is 0)")
+		slog.Error("Company profile data not found in API response (Company ID is 0)")
+		os.Exit(1)
 	}
 
 	// Log the fetched details before returning
-	log.Debug().Msgf("Fetched profile - Company ID: %d, Name: %s, Type: %d", apiResp.Company.ID, apiResp.Company.Name, apiResp.Company.CompanyType)
+	slog.Debug("Fetched profile - Company ID: "+fmt.Sprintf("%d", apiResp.Company.ID)+", Name: "+apiResp.Company.Name+", Type: "+fmt.Sprintf("%d", apiResp.Company.CompanyType))
 	return apiResp.Company
 }
