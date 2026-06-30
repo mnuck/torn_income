@@ -1,0 +1,59 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+        - production
+      image_tag:
+        description: 'Image tag to deploy (default: latest)'
+        required: false
+        default: 'latest'
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  deploy:
+    name: Deploy to ${{ github.event.inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set image name
+      run: |
+        echo "FULL_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.event.inputs.image_tag || 'latest' }}" >> $GITHUB_ENV
+
+    - name: Verify image exists
+      run: docker manifest inspect ${{ env.FULL_IMAGE }}
+
+    - name: Update deployment manifest
+      run: |
+        sed -i "s|image: .*${{ github.event.repository.name }}:.*|image: ${{ env.FULL_IMAGE }}|" deploy/deployment.yaml
+        echo "Updated manifest:"
+        grep -A2 -B2 "image:" deploy/deployment.yaml
+
+    - name: Validate Kubernetes manifests
+      uses: instrumenta/kubeval-action@master
+      with:
+        files: deploy/
+
+    - name: Deployment summary
+      run: |
+        echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **Environment**: ${{ github.event.inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Image**: ${{ env.FULL_IMAGE }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Triggered by**: ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Time**: $(date -u)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Apply with: \`kubectl apply -f deploy/\`" >> $GITHUB_STEP_SUMMARY
